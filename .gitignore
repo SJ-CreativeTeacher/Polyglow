@@ -1,0 +1,12 @@
+# Local visual-test profiles and screenshots
+.qa-*/
+.qa-*.png
+
+# Generated intermediate image variants kept only on this computer
+assets/images/polyglow-lotus-3d-original.png
+assets/images/polyglow-lotus-3d-v2.png
+
+# Operating-system files
+Thumbs.db
+.DS_Store
+
