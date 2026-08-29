@@ -1,5 +1,7 @@
 const test=require("node:test");
 const assert=require("node:assert/strict");
+const fs=require("node:fs");
+const path=require("node:path");
 const handler=require("../api/parse-session");
 
 const validDraft={date:"2026-08-29",languageId:"es",durationMinutes:30,activityId:"integrated-learning",subcategoryId:"app",tutorName:null,topic:"путешествия",skills:["reading","listening","vocabulary"],notes:"Duolingo"};
@@ -8,9 +10,9 @@ const mockFetch=(status,payload)=>async()=>({ok:status>=200&&status<300,status,t
 const request=fetchImpl=>handler.requestDraft({fetchImpl,key:"test-key-never-logged",model:"openrouter/free",description:"safe test description",uiLanguage:"ru",clientDate:"2026-08-29"});
 
 test("accepts a successful JSON completion",async()=>{
-  const result=await request(mockFetch(200,completion(JSON.stringify(validDraft))));
+  const result=await request(mockFetch(200,completion(JSON.stringify({...validDraft,dateExplicit:true,detectedLanguageIds:["es"],ambiguousFields:[],multipleSessions:false}))));
   assert.equal(result.ok,true);
-  assert.deepEqual(result.draft,validDraft);
+  assert.equal(result.draft.languageId,"es");assert.equal(result.draft.durationMinutes,30);assert.equal(result.draft.activityId,"integrated-learning");
 });
 
 test("extracts JSON from a markdown block",async()=>{
@@ -95,6 +97,33 @@ test("returns needs_clarification instead of an error for incomplete input",()=>
   const result=handler.clarificationResult(handler.normalizeDraft({detectedLanguageIds:[],ambiguousFields:[],multipleSessions:false}));
   assert.equal(result.status,"needs_clarification");
   assert.deepEqual(result.missingFields,["languageId","durationMinutes","activityId"]);
+});
+
+test("locally clarifies vague and partial descriptions without stale defaults",()=>{
+  const vague=handler.localClarificationDraft("Сегодня немного позанималась","2026-08-30");assert.deepEqual(handler.missingFields(vague),["languageId","durationMinutes","activityId"]);assert.equal(vague.date,"2026-08-30");
+  const reading=handler.localClarificationDraft("Сегодня читала на французском","2026-08-30");assert.equal(reading.languageId,"fr");assert.equal(reading.activityId,"reading");assert.deepEqual(handler.missingFields(reading),["durationMinutes"]);
+});
+
+test("detects multiple sessions locally and asks to split them",()=>{
+  const draft=handler.localClarificationDraft("Сегодня 20 минут читала по-английски и 15 минут занималась французским в приложении","2026-08-30");assert.equal(draft.multipleSessions,true);assert.deepEqual(draft.detectedLanguageIds,["en","fr"]);assert.ok(draft.ambiguousFields.includes("languageId"));
+});
+
+test("ignores a model date unless it was explicitly stated",()=>{
+  assert.equal(handler.normalizeDraft({...validDraft,date:"2026-08-25",dateExplicit:false}).date,null);assert.equal(handler.normalizeDraft({...validDraft,date:"2026-08-25",dateExplicit:true}).date,"2026-08-25");
+});
+
+test("client resets draft and clarification before sequential AI requests",()=>{
+  const source=fs.readFileSync(path.join(__dirname,"../assets/js/app.js"),"utf8");
+  assert.match(source,/function resetAIRequestState\(\)\{aiDraft=null;/);
+  assert.match(source,/aiDirty=true;resetAIRequestState\(\);setAIView\("loading"\)/);
+  assert.match(source,/ai-description"\)\.addEventListener\("input"[^\n]*clearAIError/);
+});
+
+test("client clears completed live states and counts filtered active languages",()=>{
+  const source=fs.readFileSync(path.join(__dirname,"../assets/js/app.js"),"utf8");
+  assert.match(source,/loadingText\.textContent=view==="loading"\?t\("ai\.loading"\):""/);
+  assert.match(source,/function clearAIError\(\)\{aiErrorKey=null;[^\n]*error\.textContent=""/);
+  assert.match(source,/new Set\(sessions\.map\(item=>item\.languageId\)\.filter\(Boolean\)\)\.size/);
 });
 
 test("normalizes an API key with a trailing newline",()=>{
