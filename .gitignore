@@ -1,6 +1,19 @@
 # Local visual-test profiles and screenshots
+.qa-journal-ui/
+.qa-journal-ui.png
 .qa-*/
 .qa-*.png
+test-results/
+
+# Local secrets and Vercel state
+.env
+.env.local
+.env.*.local
+.vercel
+.vercel/
+
+# Local implementation instructions
+Polyglow_AI_Smart_Journal_Codex_Instructions.md
 
 # Generated intermediate image variants kept only on this computer
 assets/images/polyglow-lotus-3d-original.png
@@ -9,4 +22,3 @@ assets/images/polyglow-lotus-3d-v2.png
 # Operating-system files
 Thumbs.db
 .DS_Store
-

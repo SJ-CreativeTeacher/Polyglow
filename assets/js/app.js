@@ -20,6 +20,10 @@ let goalFilter="active";
 let insightFilters={period:"month",languageId:"",source:"",from:"",to:""};
 let insightCategory=null;
 let onboardingLanguageCodes=[];
+let aiDraft=null;
+let aiBusy=false;
+let aiDirty=false;
+let aiTrigger=null;
 const $=selector=>document.querySelector(selector);
 const $$=selector=>[...document.querySelectorAll(selector)];
 const todayKey=()=>{const date=new Date();return`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`;};
@@ -34,7 +38,7 @@ function applyTranslations(){
   $$('[data-i18n-placeholder]').forEach(element=>element.placeholder=t(element.dataset.i18nPlaceholder));
   $$('[data-i18n-aria]').forEach(element=>element.setAttribute("aria-label",t(element.dataset.i18nAria)));
   document.title=`Polyglow — ${t("brand.subtitle")}`;
-  renderDate();renderHero();renderOnboardingLanguages();renderCatalog();renderSelectedLanguages();renderMoods();renderJournal();renderFocusControls();renderCalendar();renderGoals();renderAnalytics();syncControls();if(sessionDraft){$("#activity-editor").replaceChildren(...sessionDraft.map(renderActivityRow));updateSessionTotals();}
+  renderDate();renderHero();renderOnboardingLanguages();renderCatalog();renderSelectedLanguages();renderMoods();renderJournal();renderFocusControls();renderCalendar();renderGoals();renderAnalytics();syncControls();renderAIJournal();if(sessionDraft){$("#activity-editor").replaceChildren(...sessionDraft.map(renderActivityRow));updateSessionTotals();}
 }
 
 function syncControls(){
@@ -175,10 +179,62 @@ async function toggleMusic(){const audio=$("#background-audio");if(!audio.paused
 
 function renderLanguageGoalPanel(){let panel=$("#insight-language-goals");if(!insightFilters.languageId){panel?.remove();return;}if(!panel){panel=document.createElement("section");panel.id="insight-language-goals";panel.className="insight-language-goals";$(".chart-card .section-heading").after(panel);}const goals=state.goals.filter(goal=>goal.languageId===insightFilters.languageId&&goal.status!=="archived");panel.replaceChildren(...(goals.length?goals.map(goal=>{const progress=goalProgress(goal,state.sessions);const percent=Math.min(100,Math.round(progress/Math.max(1,goal.target)*100));const row=document.createElement("div");row.className="insight-goal-row";row.innerHTML=`<span>${escapeHtml(goal.title)}</span><span class="goal-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}" aria-label="${escapeHtml(goal.title)}"><i style="width:${percent}%"></i></span><strong>${percent}%</strong>`;return row;}):[Object.assign(document.createElement("p"),{className:"empty",textContent:t("insights.noLanguageGoals")})]));panel.setAttribute("aria-label",t("insights.goalProgress"));}
 function styleAnalyticsTimeUnits(){["#insight-total","#insight-average"].forEach(selector=>{const element=$(selector);const value=element.textContent.trim();element.setAttribute("aria-label",value);const parts=value.split(/\s+/);element.replaceChildren(...parts.flatMap((part,index)=>{const nodes=[];if(index)nodes.push(document.createTextNode(" "));if(/^\d+$/.test(part))nodes.push(document.createTextNode(part));else{const unit=document.createElement("span");unit.className="analytics-time-unit";unit.textContent=part;nodes.push(unit);}return nodes;}));element.classList.add("analytics-time-value");const caption=element.nextElementSibling;if(caption){caption.hidden=false;caption.textContent=t("time.hoursMinutesShort");}});}
+
+function renderAISubcategories(selected=""){
+  const category=activityCatalog.find(item=>item.id===$("#ai-activity").value);
+  const field=$("#ai-subcategory-field"),select=$("#ai-subcategory");
+  const options=category?.sub||[];
+  select.replaceChildren(...options.map(id=>new Option(t(`sub.${id}`),id)));
+  select.value=options.includes(selected)?selected:(options[0]||"");
+  field.hidden=!options.length;
+  $("#ai-tutor-field").hidden=!(category?.id==="integrated-learning"&&select.value==="tutor");
+}
+function renderAISkills(selected=[]){$("#ai-skills").replaceChildren(...["speaking","grammar","vocabulary","listening","reading","writing","pronunciation","mediation"].map(id=>{const label=document.createElement("label");const input=document.createElement("input");input.type="checkbox";input.value=id;input.checked=selected.includes(id);const span=document.createElement("span");span.textContent=t(`skill.${id}`);label.append(input,span);return label;}));}
+function renderAIJournal(){
+  const dialog=$("#ai-journal-dialog");if(!dialog)return;
+  const languageValue=$("#ai-language")?.value||"",activityValue=$("#ai-activity")?.value||"reading",subcategoryValue=$("#ai-subcategory")?.value||"",selectedSkills=[...$("#ai-skills").querySelectorAll("input:checked")].map(input=>input.value);
+  populateLanguageSelect($("#ai-language"),languageValue);
+  $("#ai-activity").replaceChildren(...activityCatalog.map(item=>new Option(t(`activity.${item.id}`),item.id)));
+  $("#ai-activity").value=activityCatalog.some(item=>item.id===activityValue)?activityValue:"reading";
+  renderAISubcategories(subcategoryValue);
+  renderAISkills(selectedSkills);
+  if(dialog.open&&!aiBusy)validateAIDraft();
+}
+function setAIView(view){
+  $("#ai-compose-state").hidden=!["compose","error"].includes(view);$("#ai-loading").hidden=view!=="loading";$("#ai-result").hidden=view!=="result";
+  $("#ai-compose-actions").hidden=!["compose","error"].includes(view);$("#ai-result-actions").hidden=view!=="result";$("#ai-error").hidden=view!=="error";
+  aiBusy=view==="loading";$("#ai-create").disabled=aiBusy;
+}
+function openAIJournal(){
+  aiTrigger=document.activeElement;aiDraft=null;aiDirty=false;$("#ai-description").value="";$("#ai-error").textContent="";setAIView("compose");
+  $("#ai-journal-dialog").showModal();requestAnimationFrame(()=>$("#ai-description").focus());
+}
+function closeAIJournal(force=false){
+  if(!force&&aiDirty){openConfirm(t("ai.unsavedTitle"),t("ai.unsavedText"),t("ai.closeAnyway"),()=>closeAIJournal(true));return;}
+  const dialog=$("#ai-journal-dialog");aiBusy=false;aiDirty=false;aiDraft=null;const lotus=Object.assign(document.createElement("img"),{className:"ai-orb",src:"./assets/images/polyglow-lotus-3d.png",alt:""});lotus.setAttribute("aria-hidden","true");$("#ai-loading").replaceChildren(lotus,Object.assign(document.createElement("strong"),{textContent:t("ai.loading")}));dialog.close();setTimeout(()=>aiTrigger?.focus(),0);
+}
+function applyAIDraft(draft){
+  aiDraft=draft;$("#ai-date").value=draft.date||todayKey();$("#ai-start").value=new Date().toTimeString().slice(0,5);
+  const language=activeLanguages().find(item=>item.id===draft.languageId||item.catalogCode===draft.languageId);$("#ai-language").value=language?.id||state.profile.defaultLanguageId||"";renderSelectFlag($("#ai-language"));
+  $("#ai-duration").value=draft.durationMinutes||"";$("#ai-activity").value=activityCatalog.some(item=>item.id===draft.activityId)?draft.activityId:"";renderAISubcategories(draft.subcategoryId||"");
+  $("#ai-tutor-name").value=draft.tutorName||"";$("#ai-topic").value=draft.topic||"";$("#ai-notes").value=draft.notes||"";renderAISkills(Array.isArray(draft.skills)?draft.skills:[]);setAIView("result");aiDirty=true;validateAIDraft();$("#ai-date").focus();
+}
+function validateAIDraft(){const valid=Boolean($("#ai-date").value&&$("#ai-start").value&&$("#ai-language").value&&Number($("#ai-duration").value)>0&&$("#ai-activity").value);$("#ai-validation").textContent=valid?"":t("ai.missing");$("#ai-save").disabled=!valid;["#ai-date","#ai-start","#ai-language","#ai-duration","#ai-activity"].forEach(selector=>$(selector).classList.toggle("needs-value",!$(selector).value));return valid;}
+async function requestAIDraft(){
+  const description=$("#ai-description").value.trim();if(description.length<3){$("#ai-error").textContent=t("ai.empty");setAIView("error");return;}
+  aiDirty=true;setAIView("loading");
+  try{const response=await fetch("./api/parse-session",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({description,uiLanguage:state.settings.uiLanguage,selectedLanguageId:state.languages.find(item=>item.id===state.profile.defaultLanguageId)?.catalogCode||null,clientDate:todayKey(),timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone})});const payload=await response.json().catch(()=>({}));if(!response.ok){const key=payload.code==="AI_NOT_CONFIGURED"?"ai.notConfigured":[429,502,503].includes(response.status)?"ai.unavailable":"ai.invalid";throw Object.assign(new Error(t(key)),{handled:true});}if(!payload.ok||!payload.draft)throw Object.assign(new Error(t("ai.invalid")),{handled:true});applyAIDraft(payload.draft);}catch(error){$("#ai-error").textContent=error.handled?error.message:t("ai.network");setAIView("error");}
+}
+function buildAISession(){
+  if(!validateAIDraft())return null;const now=new Date().toISOString(),duration=Math.round(Number($("#ai-duration").value)),categoryId=$("#ai-activity").value,subcategoryId=$("#ai-subcategory-field").hidden?null:$("#ai-subcategory").value||null,topic=$("#ai-topic").value.trim(),details={};
+  if(categoryId==="integrated-learning"&&subcategoryId==="tutor"){details.tutorName=$("#ai-tutor-name").value.trim();details.lessonTopic=topic;details.practisedSkills=[...$("#ai-skills").querySelectorAll("input:checked")].map(input=>input.value);}else if(categoryId==="grammar")details.grammarTopic=topic;else if(["speaking","vocabulary"].includes(categoryId))details.topic=topic;else if(topic)details.description=topic;
+  const startTime=$("#ai-start").value||new Date().toTimeString().slice(0,5),activity={id:newId("activity"),categoryId,subcategoryId,durationMinutes:duration,details,note:""};return{id:newId("session"),date:$("#ai-date").value,startTime,endTime:calculateEndTime(startTime,duration),startedAt:`${$("#ai-date").value}T${startTime}:00`,durationMinutes:duration,languageId:$("#ai-language").value,categoryId,subcategoryId,activities:[activity],source:"manual",note:$("#ai-notes").value.trim(),createdAt:now,updatedAt:now};
+}
 const renderAnalyticsCore=renderAnalytics;
 renderAnalytics=function(){renderAnalyticsCore();renderLanguageGoalPanel();styleAnalyticsTimeUnits();};
 
 document.documentElement.dataset.theme=state.settings.theme;
+{const actions=$(".journal-heading");const manual=$("#add-session-button");const group=document.createElement("div");group.className="journal-heading-actions";const ai=document.createElement("button");ai.id="add-ai-session-button";ai.type="button";ai.className="ai-button";ai.innerHTML='<span class="ai-button-spark" aria-hidden="true"></span><span data-i18n="ai.open"></span>';manual.before(group);group.append(ai,manual);}
 $("#language-top").addEventListener("change",event=>setLanguage(event.target.value));
 $("#language-settings").addEventListener("change",event=>setLanguage(event.target.value));
 $("#onboarding-ui-language").addEventListener("change",event=>setLanguage(event.target.value));
@@ -200,6 +256,21 @@ $("#session-language").addEventListener("change",event=>renderSelectFlag(event.t
 $("#focus-language").addEventListener("change",event=>renderSelectFlag(event.target));
 $("#goal-language").addEventListener("change",event=>renderSelectFlag(event.target));
 $("#add-session-button").addEventListener("click",()=>openSessionForm());
+$("#add-ai-session-button").addEventListener("click",openAIJournal);
+$("#ai-dialog-close").addEventListener("click",()=>closeAIJournal());
+$("#ai-cancel").addEventListener("click",()=>closeAIJournal());
+$("#ai-result-cancel").addEventListener("click",()=>closeAIJournal());
+$("#ai-create").addEventListener("click",requestAIDraft);
+$("#ai-edit-description").addEventListener("click",()=>{setAIView("compose");$("#ai-description").focus();});
+$("#ai-save").addEventListener("click",()=>{const session=buildAISession();if(!session)return;aiDirty=false;saveManualSession(session);closeAIJournal(true);toast(t("ai.saved"));});
+$("#ai-description").addEventListener("input",()=>{aiDirty=Boolean($("#ai-description").value.trim());});
+$("#ai-journal-dialog").addEventListener("cancel",event=>{event.preventDefault();closeAIJournal();});
+$("#ai-journal-dialog").addEventListener("click",event=>{if(event.target===$("#ai-journal-dialog"))closeAIJournal();});
+$$('[data-ai-example]').forEach(button=>button.addEventListener("click",()=>{$("#ai-description").value=t(`ai.example${button.dataset.aiExample==="tutor"?"Tutor":"App"}Text`);aiDirty=true;$("#ai-description").focus();}));
+$("#ai-activity").addEventListener("change",()=>{renderAISubcategories();validateAIDraft();});
+$("#ai-subcategory").addEventListener("change",()=>{renderAISubcategories($("#ai-subcategory").value);validateAIDraft();});
+$("#ai-result").addEventListener("input",validateAIDraft);
+$("#ai-result").addEventListener("change",validateAIDraft);
 $("#today-add-session").addEventListener("click",()=>openSessionForm());
 $("#session-dialog-close").addEventListener("click",()=>$("#session-dialog").close());
 $("#session-cancel").addEventListener("click",()=>$("#session-dialog").close());
