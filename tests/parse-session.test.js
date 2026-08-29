@@ -30,6 +30,17 @@ test("rejects invalid model JSON",async()=>{
   assert.deepEqual(result,{ok:false,status:502,code:"AI_INVALID_RESPONSE"});
 });
 
+test("maps a rejected fetch TypeError to provider unavailable",async()=>{
+  const fetchError=Object.assign(new TypeError("fetch failed"),{cause:{code:"ECONNRESET"}});
+  const result=await request(async()=>{throw fetchError;});
+  assert.deepEqual(result,{ok:false,status:503,code:"AI_PROVIDER_UNAVAILABLE"});
+});
+
+test("maps an unreadable response body to provider unavailable",async()=>{
+  const result=await request(async()=>({ok:true,status:200,text:async()=>{throw new TypeError("terminated");}}));
+  assert.deepEqual(result,{ok:false,status:503,code:"AI_PROVIDER_UNAVAILABLE"});
+});
+
 for(const [status,code,clientStatus] of [[401,"AI_AUTH_ERROR",502],[402,"AI_RATE_LIMITED",429],[403,"AI_AUTH_ERROR",502],[429,"AI_RATE_LIMITED",429],[500,"AI_PROVIDER_UNAVAILABLE",503],[502,"AI_PROVIDER_UNAVAILABLE",503],[503,"AI_PROVIDER_UNAVAILABLE",503]]){
   test(`maps OpenRouter ${status} to ${code}`,async()=>{
     const result=await request(mockFetch(status,{error:{code:`provider_${status}`,message:"Safe provider message"}}));
