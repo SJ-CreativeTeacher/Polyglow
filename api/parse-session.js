@@ -5,6 +5,9 @@ const SUBCATEGORIES=new Set(["book","periodical","article","studyText","essay","
 const SKILLS=new Set(["speaking","grammar","vocabulary","listening","reading","writing","pronunciation","mediation"]);
 const cleanText=(value,max)=>typeof value==="string"?value.replace(/[<>\u0000-\u001f\u007f]/g," ").replace(/\s+/g," ").trim().slice(0,max):"";
 const validDate=value=>/^\d{4}-\d{2}-\d{2}$/.test(value)&&!Number.isNaN(Date.parse(`${value}T12:00:00Z`));
+const normalizeApiKey=value=>String(value??"").trim().replace(/[\r\n\t]/g,"").replace(/^Bearer +/i,"");
+const validApiKey=value=>typeof value==="string"&&/^[!-~]+$/.test(value);
+const normalizeModel=value=>String(value??"").trim();
 
 function normalizeDraft(raw){
   const source=raw&&typeof raw==="object"&&!Array.isArray(raw)?raw:{};
@@ -98,8 +101,9 @@ async function handler(request,response){
   const body=request.body&&typeof request.body==="object"?request.body:{};
   const description=cleanText(body.description,1201),uiLanguage=body.uiLanguage==="en"?"en":"ru",clientDate=validDate(body.clientDate)?body.clientDate:new Date().toISOString().slice(0,10);
   if(description.length<3||description.length>1200)return send(response,400,{ok:false,code:"INVALID_DESCRIPTION"});
-  const key=process.env.OPENROUTER_API_KEY,model=cleanText(process.env.OPENROUTER_MODEL,120)||DEFAULT_MODEL;
+  const rawKey=process.env.OPENROUTER_API_KEY,key=normalizeApiKey(rawKey),model=normalizeModel(process.env.OPENROUTER_MODEL)||DEFAULT_MODEL,hasKey=Boolean(String(rawKey??"").trim());
   if(!key){safeLog("configuration",{code:"AI_NOT_CONFIGURED",message:"OpenRouter API key is not configured",model,hasKey:false});return send(response,503,{ok:false,code:"AI_NOT_CONFIGURED"});}
+  if(!validApiKey(key)){safeLog("configuration",{code:"AI_INVALID_CONFIGURATION",message:"OpenRouter API key has an invalid format",model,hasKey});return send(response,503,{ok:false,code:"AI_INVALID_CONFIGURATION"});}
   try{
     const result=await requestDraft({key,model,description,uiLanguage,clientDate});
     if(!result.ok)return send(response,result.status,{ok:false,code:result.code});
@@ -117,3 +121,6 @@ module.exports.extractJsonText=extractJsonText;
 module.exports.classifyProviderStatus=classifyProviderStatus;
 module.exports.requestDraft=requestDraft;
 module.exports.RESPONSE_FORMAT=RESPONSE_FORMAT;
+module.exports.normalizeApiKey=normalizeApiKey;
+module.exports.validApiKey=validApiKey;
+module.exports.normalizeModel=normalizeModel;

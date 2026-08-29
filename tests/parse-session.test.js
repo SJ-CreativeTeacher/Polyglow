@@ -71,3 +71,40 @@ test("does not invent missing required session data",()=>{
   assert.equal(draft.activityId,null);
   assert.deepEqual(handler.missingFields(draft),["date","languageId","durationMinutes","activityId"]);
 });
+
+test("normalizes an API key with a trailing newline",()=>{
+  assert.equal(handler.normalizeApiKey("sk-or-test\n"),"sk-or-test");
+  assert.equal(handler.validApiKey(handler.normalizeApiKey("sk-or-test\n")),true);
+});
+
+test("normalizes an API key with CRLF",()=>{
+  assert.equal(handler.normalizeApiKey("sk-or-\r\ntest"),"sk-or-test");
+});
+
+test("trims spaces around an API key",()=>{
+  assert.equal(handler.normalizeApiKey("  sk-or-test  "),"sk-or-test");
+});
+
+test("removes an accidental Bearer prefix",()=>{
+  assert.equal(handler.normalizeApiKey("Bearer sk-or-test"),"sk-or-test");
+});
+
+test("rejects an API key with an internal control character",()=>{
+  const key=handler.normalizeApiKey("sk-or-\u0001test");
+  assert.equal(handler.validApiKey(key),false);
+});
+
+test("returns invalid configuration before fetch for a malformed key",async()=>{
+  const previousKey=process.env.OPENROUTER_API_KEY;
+  process.env.OPENROUTER_API_KEY="sk-or-\u0001test";
+  const response={statusCode:0,headers:{},payload:null,status(value){this.statusCode=value;return this;},setHeader(name,value){this.headers[name]=value;return this;},json(value){this.payload=value;return this;}};
+  try{
+    await handler({method:"POST",headers:{"content-type":"application/json"},body:{description:"valid description",clientDate:"2026-08-29"}},response);
+    assert.equal(response.statusCode,503);
+    assert.deepEqual(response.payload,{ok:false,code:"AI_INVALID_CONFIGURATION"});
+  }finally{if(previousKey===undefined)delete process.env.OPENROUTER_API_KEY;else process.env.OPENROUTER_API_KEY=previousKey;}
+});
+
+test("trims the configured model name",()=>{
+  assert.equal(handler.normalizeModel("  openrouter/free\r\n"),"openrouter/free");
+});
