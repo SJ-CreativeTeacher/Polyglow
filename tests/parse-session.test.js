@@ -69,7 +69,32 @@ test("does not invent missing required session data",()=>{
   assert.equal(draft.languageId,null);
   assert.equal(draft.durationMinutes,null);
   assert.equal(draft.activityId,null);
-  assert.deepEqual(handler.missingFields(draft),["date","languageId","durationMinutes","activityId"]);
+  assert.deepEqual(handler.missingFields(draft),["languageId","durationMinutes","activityId"]);
+});
+
+test("keeps an explicitly detected language outside the profile",()=>{
+  const draft=handler.normalizeDraft({...validDraft,languageId:"es",detectedLanguageIds:["es"]});
+  assert.equal(draft.languageId,"es");
+  assert.deepEqual(draft.detectedLanguageIds,["es"]);
+});
+
+test("requires clarification when several languages are detected",()=>{
+  const draft=handler.normalizeDraft({...validDraft,languageId:null,detectedLanguageIds:["es","en"],ambiguousFields:["languageId"],multipleSessions:true});
+  assert.equal(draft.languageId,null);
+  assert.equal(draft.multipleSessions,true);
+  assert.deepEqual(handler.missingFields(draft),[]);
+});
+
+test("reports only missing required fields",()=>{
+  assert.deepEqual(handler.missingFields(handler.normalizeDraft({languageId:"es",detectedLanguageIds:["es"],activityId:"reading"})),["durationMinutes"]);
+  assert.deepEqual(handler.missingFields(handler.normalizeDraft({durationMinutes:30,activityId:"integrated-learning"})),["languageId"]);
+  assert.deepEqual(handler.missingFields(handler.normalizeDraft({languageId:"de",detectedLanguageIds:["de"],durationMinutes:30})),["activityId"]);
+});
+
+test("returns needs_clarification instead of an error for incomplete input",()=>{
+  const result=handler.clarificationResult(handler.normalizeDraft({detectedLanguageIds:[],ambiguousFields:[],multipleSessions:false}));
+  assert.equal(result.status,"needs_clarification");
+  assert.deepEqual(result.missingFields,["languageId","durationMinutes","activityId"]);
 });
 
 test("normalizes an API key with a trailing newline",()=>{

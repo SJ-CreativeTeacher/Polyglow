@@ -192,21 +192,22 @@ function renderAISubcategories(selected=""){
 function renderAISkills(selected=[]){$("#ai-skills").replaceChildren(...["speaking","grammar","vocabulary","listening","reading","writing","pronunciation","mediation"].map(id=>{const label=document.createElement("label");const input=document.createElement("input");input.type="checkbox";input.value=id;input.checked=selected.includes(id);const span=document.createElement("span");span.textContent=t(`skill.${id}`);label.append(input,span);return label;}));}
 function renderAIJournal(){
   const dialog=$("#ai-journal-dialog");if(!dialog)return;
-  const languageValue=$("#ai-language")?.value||"",activityValue=$("#ai-activity")?.value||"reading",subcategoryValue=$("#ai-subcategory")?.value||"",selectedSkills=[...$("#ai-skills").querySelectorAll("input:checked")].map(input=>input.value);
-  populateLanguageSelect($("#ai-language"),languageValue);
-  $("#ai-activity").replaceChildren(...activityCatalog.map(item=>new Option(t(`activity.${item.id}`),item.id)));
-  $("#ai-activity").value=activityCatalog.some(item=>item.id===activityValue)?activityValue:"reading";
+  const languageValue=$("#ai-language")?.value||"",activityValue=$("#ai-activity")?.value||"",subcategoryValue=$("#ai-subcategory")?.value||"",selectedSkills=[...$("#ai-skills").querySelectorAll("input:checked")].map(input=>input.value);
+  const languageSelect=$("#ai-language");languageSelect.replaceChildren(new Option(t("languages.choose"),""),...activeLanguages().map(item=>new Option(getLanguageDisplay(item,state.settings.uiLanguage),item.id)));languageSelect.value=activeLanguages().some(item=>item.id===languageValue)?languageValue:"";renderSelectFlag(languageSelect);
+  $("#ai-activity").replaceChildren(new Option(t("session.selectActivity"),""),...activityCatalog.map(item=>new Option(t(`activity.${item.id}`),item.id)));
+  $("#ai-activity").value=activityCatalog.some(item=>item.id===activityValue)?activityValue:"";
   renderAISubcategories(subcategoryValue);
   renderAISkills(selectedSkills);
+  if(dialog.open&&!$("#ai-clarification").hidden)renderAIClarification();
   if(dialog.open&&!aiBusy)validateAIDraft();
 }
 function setAIView(view){
-  $("#ai-compose-state").hidden=!["compose","error"].includes(view);$("#ai-loading").hidden=view!=="loading";$("#ai-result").hidden=view!=="result";
+  $("#ai-compose-state").hidden=!["compose","error"].includes(view);$("#ai-loading").hidden=view!=="loading";$("#ai-clarification").hidden=view!=="clarify";$("#ai-result").hidden=view!=="result";
   $("#ai-compose-actions").hidden=!["compose","error"].includes(view);$("#ai-result-actions").hidden=view!=="result";$("#ai-error").hidden=view!=="error";
   aiBusy=view==="loading";$("#ai-create").disabled=aiBusy;
 }
 function openAIJournal(){
-  aiTrigger=document.activeElement;aiDraft=null;aiDirty=false;$("#ai-description").value="";$("#ai-error").textContent="";setAIView("compose");
+  aiTrigger=document.activeElement;aiDraft=null;aiDirty=false;$("#ai-description").value="";$("#ai-error").textContent="";$("#ai-clarify-language").value="";$("#ai-clarify-duration").value="";$("#ai-clarify-activity").value="";setAIView("compose");
   $("#ai-journal-dialog").showModal();requestAnimationFrame(()=>$("#ai-description").focus());
 }
 function closeAIJournal(force=false){
@@ -214,16 +215,29 @@ function closeAIJournal(force=false){
   const dialog=$("#ai-journal-dialog");aiBusy=false;aiDirty=false;aiDraft=null;const lotus=Object.assign(document.createElement("img"),{className:"ai-orb",src:"./assets/images/polyglow-lotus-3d.png",alt:""});lotus.setAttribute("aria-hidden","true");$("#ai-loading").replaceChildren(lotus,Object.assign(document.createElement("strong"),{textContent:t("ai.loading")}));dialog.close();setTimeout(()=>aiTrigger?.focus(),0);
 }
 function applyAIDraft(draft){
-  aiDraft=draft;$("#ai-date").value=draft.date||"";$("#ai-start").value=new Date().toTimeString().slice(0,5);
+  aiDraft=draft;$("#ai-date").value=draft.date||todayKey();$("#ai-start").value=new Date().toTimeString().slice(0,5);
   const language=activeLanguages().find(item=>item.id===draft.languageId||item.catalogCode===draft.languageId);$("#ai-language").value=language?.id||"";renderSelectFlag($("#ai-language"));
   $("#ai-duration").value=draft.durationMinutes||"";$("#ai-activity").value=activityCatalog.some(item=>item.id===draft.activityId)?draft.activityId:"";renderAISubcategories(draft.subcategoryId||"");
   $("#ai-tutor-name").value=draft.tutorName||"";$("#ai-topic").value=draft.topic||"";$("#ai-notes").value=draft.notes||"";renderAISkills(Array.isArray(draft.skills)?draft.skills:[]);setAIView("result");aiDirty=true;validateAIDraft();$("#ai-date").focus();
 }
+function detectedLanguageName(code){const item=getCatalogLanguage(code);return item?.[state.settings.uiLanguage]||code?.toUpperCase()||t("languages.choose");}
+function renderAIClarification(){
+  if(!aiDraft)return;const detected=aiDraft.detectedLanguageIds||[],multiple=aiDraft.multipleSessions||detected.length>1,outsideCode=detected.length===1&&!activeLanguages().some(item=>item.catalogCode===detected[0])?detected[0]:null;
+  const message=$("#ai-clarify-message"),languageField=$("#ai-clarify-language-field"),durationField=$("#ai-clarify-duration-field"),activityField=$("#ai-clarify-activity-field"),languageSelect=$("#ai-clarify-language"),activitySelect=$("#ai-clarify-activity"),currentLanguage=languageSelect.value,currentActivity=activitySelect.value;
+  const ambiguous=new Set(aiDraft.ambiguousFields||[]),missing=new Set([...(aiDraft.missingFields||[]),...ambiguous]);message.classList.toggle("warning",Boolean(outsideCode||multiple));message.textContent=multiple?t("ai.multipleLanguages"):outsideCode?t("ai.languageOutside").replace("{language}",detectedLanguageName(outsideCode)):t("ai.clarifyIntro");
+  languageSelect.replaceChildren(new Option(t("languages.choose"),""),...activeLanguages().map(item=>new Option(getLanguageDisplay(item,state.settings.uiLanguage),item.id)));const recognized=ambiguous.has("languageId")?"":activeLanguages().find(item=>item.catalogCode===aiDraft.languageId)?.id||"";languageSelect.value=activeLanguages().some(item=>item.id===currentLanguage)?currentLanguage:recognized;
+  activitySelect.replaceChildren(new Option(t("session.selectActivity"),""),...activityCatalog.map(item=>new Option(t(`activity.${item.id}`),item.id)));activitySelect.value=activityCatalog.some(item=>item.id===currentActivity)?currentActivity:(ambiguous.has("activityId")?"":aiDraft.activityId||"");
+  if(!$("#ai-clarify-duration").value&&aiDraft.durationMinutes&&!ambiguous.has("durationMinutes"))$("#ai-clarify-duration").value=aiDraft.durationMinutes;
+  languageField.hidden=multiple||outsideCode&&!aiDraft.chooseProfileLanguage||!outsideCode&&!missing.has("languageId");durationField.hidden=multiple||!missing.has("durationMinutes");activityField.hidden=multiple||!missing.has("activityId");
+  const add=$("#ai-add-detected-language");add.hidden=!outsideCode||multiple;add.textContent=outsideCode?t("ai.addLanguage").replace("{language}",detectedLanguageName(outsideCode)):"";$("#ai-choose-profile-language").hidden=!outsideCode||multiple;$("#ai-continue-clarification").hidden=multiple||Boolean(outsideCode&&!aiDraft.chooseProfileLanguage);renderSelectFlag(languageSelect);
+}
+function showAIClarification(payload){aiDraft={...payload.draft,missingFields:payload.missingFields||[],ambiguousFields:payload.ambiguousFields||[]};setAIView("clarify");renderAIClarification();const first=$("#ai-clarification").querySelector("select:not([hidden]),input:not([hidden]),button:not([hidden])");first?.focus();}
+function continueAIClarification(){const languageField=$("#ai-clarify-language-field"),durationField=$("#ai-clarify-duration-field"),activityField=$("#ai-clarify-activity-field"),language=$("#ai-clarify-language").value,duration=Number($("#ai-clarify-duration").value),activity=$("#ai-clarify-activity").value;if((!languageField.hidden&&!language)||(!durationField.hidden&&!(duration>0))||(!activityField.hidden&&!activity)){$("#ai-clarify-message").textContent=t("ai.clarifyRequired");return;}if(!languageField.hidden)aiDraft.languageId=language;if(!durationField.hidden)aiDraft.durationMinutes=Math.round(duration);if(!activityField.hidden)aiDraft.activityId=activity;aiDraft.missingFields=[];aiDraft.ambiguousFields=[];applyAIDraft(aiDraft);}
 function validateAIDraft(){const valid=Boolean($("#ai-date").value&&$("#ai-start").value&&$("#ai-language").value&&Number($("#ai-duration").value)>0&&$("#ai-activity").value);$("#ai-validation").textContent=valid?"":t("ai.missing");$("#ai-save").disabled=!valid;["#ai-date","#ai-start","#ai-language","#ai-duration","#ai-activity"].forEach(selector=>$(selector).classList.toggle("needs-value",!$(selector).value));return valid;}
 async function requestAIDraft(){
   const description=$("#ai-description").value.trim();if(description.length<3){$("#ai-error").textContent=t("ai.empty");setAIView("error");return;}
   aiDirty=true;setAIView("loading");
-  try{const response=await fetch("./api/parse-session",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({description,uiLanguage:state.settings.uiLanguage,selectedLanguageId:state.languages.find(item=>item.id===state.profile.defaultLanguageId)?.catalogCode||null,clientDate:todayKey(),timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone})});const payload=await response.json().catch(()=>({}));if(!response.ok){const errorKeys={AI_NOT_CONFIGURED:"ai.notConfigured",AI_INVALID_CONFIGURATION:"ai.notConfigured",AI_AUTH_ERROR:"ai.authError",AI_RATE_LIMITED:"ai.rateLimited",AI_PROVIDER_UNAVAILABLE:"ai.providerUnavailable",AI_INVALID_RESPONSE:"ai.invalid",INTERNAL_ERROR:"ai.internal"};throw Object.assign(new Error(t(errorKeys[payload.code]||"ai.internal")),{handled:true});}if(!payload.ok||!payload.draft)throw Object.assign(new Error(t("ai.invalid")),{handled:true});applyAIDraft(payload.draft);}catch(error){$("#ai-error").textContent=error.handled?error.message:t("ai.network");setAIView("error");}
+  try{const response=await fetch("./api/parse-session",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({description,uiLanguage:state.settings.uiLanguage,selectedLanguageId:state.languages.find(item=>item.id===state.profile.defaultLanguageId)?.catalogCode||null,clientDate:todayKey(),timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone})});const payload=await response.json().catch(()=>({}));if(!response.ok){const errorKeys={AI_NOT_CONFIGURED:"ai.notConfigured",AI_INVALID_CONFIGURATION:"ai.notConfigured",AI_AUTH_ERROR:"ai.authError",AI_RATE_LIMITED:"ai.rateLimited",AI_PROVIDER_UNAVAILABLE:"ai.providerUnavailable",AI_INVALID_RESPONSE:"ai.invalid",INTERNAL_ERROR:"ai.internal"};throw Object.assign(new Error(t(errorKeys[payload.code]||"ai.internal")),{handled:true});}if(!payload.ok||!payload.draft)throw Object.assign(new Error(t("ai.invalid")),{handled:true});if(payload.status==="needs_clarification"||payload.missingFields?.length||payload.ambiguousFields?.length||payload.draft.multipleSessions)showAIClarification(payload);else{const detected=payload.draft.detectedLanguageIds||[];if(detected.length===1&&!activeLanguages().some(item=>item.catalogCode===detected[0]))showAIClarification({...payload,status:"needs_clarification",missingFields:["languageId"]});else applyAIDraft(payload.draft);}}catch(error){$("#ai-error").textContent=error.handled?error.message:t("ai.network");setAIView("error");}
 }
 function buildAISession(){
   if(!validateAIDraft())return null;const now=new Date().toISOString(),duration=Math.round(Number($("#ai-duration").value)),categoryId=$("#ai-activity").value,subcategoryId=$("#ai-subcategory-field").hidden?null:$("#ai-subcategory").value||null,topic=$("#ai-topic").value.trim(),details={};
@@ -262,6 +276,10 @@ $("#ai-cancel").addEventListener("click",()=>closeAIJournal());
 $("#ai-result-cancel").addEventListener("click",()=>closeAIJournal());
 $("#ai-create").addEventListener("click",requestAIDraft);
 $("#ai-edit-description").addEventListener("click",()=>{setAIView("compose");$("#ai-description").focus();});
+$("#ai-clarify-edit").addEventListener("click",()=>{setAIView("compose");$("#ai-description").focus();});
+$("#ai-choose-profile-language").addEventListener("click",()=>{if(!aiDraft)return;aiDraft.chooseProfileLanguage=true;renderAIClarification();$("#ai-clarify-language").focus();});
+$("#ai-continue-clarification").addEventListener("click",continueAIClarification);
+$("#ai-add-detected-language").addEventListener("click",()=>{const code=aiDraft?.detectedLanguageIds?.length===1?aiDraft.detectedLanguageIds[0]:null;if(!code||!getCatalogLanguage(code))return;const existing=state.languages.find(item=>item.catalogCode===code&&!item.archived);if(!existing&&!addCatalogLanguage(code))return;const language=state.languages.find(item=>item.catalogCode===code&&!item.archived);if(!language)return;aiDraft.languageId=language.id;aiDraft.missingFields=[];aiDraft.ambiguousFields=[];renderAIJournal();applyAIDraft(aiDraft);toast(t("ai.languageAdded"));});
 $("#ai-save").addEventListener("click",()=>{const session=buildAISession();if(!session)return;aiDirty=false;saveManualSession(session);closeAIJournal(true);toast(t("ai.saved"));});
 $("#ai-description").addEventListener("input",()=>{aiDirty=Boolean($("#ai-description").value.trim());});
 $("#ai-journal-dialog").addEventListener("cancel",event=>{event.preventDefault();closeAIJournal();});
