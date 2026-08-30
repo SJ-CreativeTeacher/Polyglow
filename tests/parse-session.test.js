@@ -10,16 +10,16 @@ const mockFetch=(status,payload)=>async()=>({ok:status>=200&&status<300,status,t
 const request=fetchImpl=>handler.requestDraft({fetchImpl,key:"test-key-never-logged",model:"openrouter/free",description:"safe test description",uiLanguage:"ru",clientDate:"2026-08-29"});
 
 test("accepts a successful JSON completion",async()=>{
-  const result=await request(mockFetch(200,completion(JSON.stringify({...validDraft,dateExplicit:true,detectedLanguageIds:["es"],ambiguousFields:[],multipleSessions:false}))));
+  const result=await request(mockFetch(200,completion(JSON.stringify({sessions:[{...validDraft,dateExplicit:true,detectedLanguageIds:["es"],ambiguousFields:[]}]}))));
   assert.equal(result.ok,true);
-  assert.equal(result.draft.languageId,"es");assert.equal(result.draft.durationMinutes,30);assert.equal(result.draft.activityId,"integrated-learning");
+  assert.equal(result.sessions[0].languageId,"es");assert.equal(result.sessions[0].durationMinutes,30);assert.equal(result.sessions[0].activityId,"integrated-learning");
 });
 
 test("extracts JSON from a markdown block",async()=>{
-  const content=`Here is the result:\n\`\`\`json\n${JSON.stringify(validDraft)}\n\`\`\``;
+  const content=`Here is the result:\n\`\`\`json\n${JSON.stringify({sessions:[{...validDraft,dateExplicit:false,detectedLanguageIds:["es"],ambiguousFields:[]}]})}\n\`\`\``;
   const result=await request(mockFetch(200,completion(content)));
   assert.equal(result.ok,true);
-  assert.equal(result.draft.languageId,"es");
+  assert.equal(result.sessions[0].languageId,"es");
 });
 
 test("rejects an empty provider response",async()=>{
@@ -104,8 +104,33 @@ test("locally clarifies vague and partial descriptions without stale defaults",(
   const reading=handler.localClarificationDraft("Сегодня читала на французском","2026-08-30");assert.equal(reading.languageId,"fr");assert.equal(reading.activityId,"reading");assert.deepEqual(handler.missingFields(reading),["durationMinutes"]);
 });
 
-test("detects multiple sessions locally and asks to split them",()=>{
-  const draft=handler.localClarificationDraft("Сегодня 20 минут читала по-английски и 15 минут занималась французским в приложении","2026-08-30");assert.equal(draft.multipleSessions,true);assert.deepEqual(draft.detectedLanguageIds,["en","fr"]);assert.ok(draft.ambiguousFields.includes("languageId"));
+test("creates separate English and French session drafts",()=>{
+  const sessions=handler.localSessionDrafts("Сегодня 20 минут читала по-английски и 15 минут занималась французским в приложении","2026-08-30");
+  assert.equal(sessions.length,2);assert.deepEqual(sessions.map(item=>[item.languageId,item.durationMinutes,item.activityId]),[["en",20,"reading"],["fr",15,"integrated-learning"]]);
+});
+
+test("does not divide shared time between languages",()=>{
+  const sessions=handler.localSessionDrafts("Час занималась английским и французским","2026-08-30");assert.equal(sessions.length,2);assert.deepEqual(sessions.map(item=>item.durationMinutes),[null,null]);
+});
+
+test("applies an explicit each-duration to every language",()=>{
+  const sessions=handler.localSessionDrafts("По 20 минут занималась английским и французским","2026-08-30");assert.equal(sessions.length,2);assert.deepEqual(sessions.map(item=>item.durationMinutes),[20,20]);
+});
+
+test("Russian description creates only the studied English session",()=>{
+  const sessions=handler.localSessionDrafts("Сегодня 20 минут читала по-английски","2026-08-30");assert.equal(sessions.length,1);assert.equal(sessions[0].languageId,"en");
+});
+
+test("creates two explicitly separate English sessions",()=>{
+  const sessions=handler.localSessionDrafts("20 минут читала по-английски и 15 минут занималась английским в приложении","2026-08-30");assert.equal(sessions.length,2);assert.deepEqual(sessions.map(item=>item.languageId),["en","en"]);
+});
+
+test("does not create a card for a language mentioned only as a topic",()=>{
+  const sessions=handler.localSessionDrafts("20 минут читала по-английски о французском искусстве","2026-08-30");assert.equal(sessions.length,1);assert.equal(sessions[0].languageId,"en");
+});
+
+test("keeps missing fields independent per session",()=>{
+  const complete=handler.prepareSession({languageId:"en",detectedLanguageIds:["en"],durationMinutes:20,activityId:"reading",ambiguousFields:[],dateExplicit:false},"2026-08-30");const partial=handler.prepareSession({languageId:"fr",detectedLanguageIds:["fr"],durationMinutes:null,activityId:"integrated-learning",subcategoryId:"app",ambiguousFields:[],dateExplicit:false},"2026-08-30");assert.deepEqual(complete.missingFields,[]);assert.deepEqual(partial.missingFields,["durationMinutes"]);
 });
 
 test("ignores a model date unless it was explicitly stated",()=>{
@@ -114,9 +139,12 @@ test("ignores a model date unless it was explicitly stated",()=>{
 
 test("client resets draft and clarification before sequential AI requests",()=>{
   const source=fs.readFileSync(path.join(__dirname,"../assets/js/app.js"),"utf8");
-  assert.match(source,/function resetAIRequestState\(\)\{aiDraft=null;/);
+  assert.match(source,/function resetAIRequestState\(\)\{aiDraft=\[\];/);
   assert.match(source,/aiDirty=true;resetAIRequestState\(\);setAIView\("loading"\)/);
   assert.match(source,/ai-description"\)\.addEventListener\("input"[^\n]*clearAIError/);
+  assert.match(source,/if\(aiSaving\)return;const sessions=buildAISessions\(\)/);
+  assert.match(source,/\[404,405,501\]\.includes\(response\.status\)/);
+  assert.match(source,/localServerError\?"ai\.localServer"/);
 });
 
 test("client clears completed live states and counts filtered active languages",()=>{
