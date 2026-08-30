@@ -134,6 +134,16 @@ test("recognizes half an hour in a German learning app",()=>{
   assert.equal(sessions.length,1);assert.deepEqual([sessions[0].languageId,sessions[0].durationMinutes,sessions[0].activityId,sessions[0].subcategoryId],["de",30,"integrated-learning","app"]);
 });
 
+test("recognizes two hours of watching a series",()=>{
+  const sessions=handler.localSessionDrafts("Сегодня два часа смотрела сериал на английском.","2026-08-30");
+  assert.equal(sessions.length,1);assert.deepEqual([sessions[0].languageId,sessions[0].durationMinutes,sessions[0].activityId,sessions[0].subcategoryId],["en",120,"watching","series"]);
+});
+
+test("recognizes English word hours and watching",()=>{
+  const sessions=handler.localSessionDrafts("I watched a series in English for two hours.","2026-08-30");
+  assert.equal(sessions.length,1);assert.deepEqual([sessions[0].languageId,sessions[0].durationMinutes,sessions[0].activityId,sessions[0].subcategoryId],["en",120,"watching","series"]);
+});
+
 test("reconciles an inaccurate successful model response with explicit text evidence",async()=>{
   const description="Сегодня 20 минут читала по-английски, а затем 15 минут занималась французским в приложении.";
   const model={sessions:[{...validDraft,dateExplicit:false,languageId:"en",detectedLanguageIds:["en"],durationMinutes:null,activityId:"reading",subcategoryId:"book",ambiguousFields:["durationMinutes"]},{...validDraft,dateExplicit:false,languageId:"fr",detectedLanguageIds:["fr"],durationMinutes:null,activityId:"reading",subcategoryId:"book",ambiguousFields:["durationMinutes"]}]};
