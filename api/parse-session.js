@@ -9,6 +9,9 @@ const validDate=value=>/^\d{4}-\d{2}-\d{2}$/.test(value)&&!Number.isNaN(Date.par
 const normalizeApiKey=value=>String(value??"").trim().replace(/[\r\n\t]/g,"").replace(/^Bearer +/i,"");
 const validApiKey=value=>typeof value==="string"&&/^[!-~]+$/.test(value);
 const normalizeModel=value=>String(value??"").trim();
+const LANGUAGE_ALIASES={en:["english","англий"],fr:["french","француз"],es:["spanish","испан"],de:["german","немец"]};
+const APP_PATTERN=/(?:\bduolingo\b|\bbabbel\b|\bbusuu\b|\bmemrise\b|\blingq\b|\bmondly\b|\bdrops\b|\banki\b|\brosetta\s+stone\b|\bhello(?:talk)?\b|\busing\s+(?:an?\s+app|duolingo|babbel|busuu|memrise|lingq|mondly|drops|anki|rosetta\s+stone)|\bin\s+an?\s+app\b|(?:в|через)\s+приложени(?:и|е)|занимал(?:ась|ся|ись)?\s+в\s+(?:duolingo|babbel|busuu|memrise|lingq|mondly|drops|anki))/i;
+const ACTIVITY_SIGNAL=/(?:чита|read|занимал|изучал|stud(?:y|ied)|practis|practic|слушал|listen|писал|writ|смотрел|watch|граммат|grammar|прилож|app|duolingo|babbel|busuu|memrise|lingq|mondly|drops|anki)/i;
 
 function normalizeDraft(raw){
   const source=raw&&typeof raw==="object"&&!Array.isArray(raw)?raw:{};
@@ -58,21 +61,37 @@ function safeLog(stage,{status=null,code="",message="",model=DEFAULT_MODEL,hasKe
 const SESSION_SCHEMA={type:"object",additionalProperties:false,properties:{date:{type:["string","null"]},dateExplicit:{type:"boolean"},languageId:{type:["string","null"]},detectedLanguageIds:{type:"array",items:{type:"string"}},durationMinutes:{type:["integer","null"]},activityId:{type:["string","null"]},subcategoryId:{type:["string","null"]},tutorName:{type:["string","null"]},topic:{type:["string","null"]},skills:{type:"array",items:{type:"string"}},notes:{type:["string","null"]},ambiguousFields:{type:"array",items:{type:"string"}}},required:["date","dateExplicit","languageId","detectedLanguageIds","durationMinutes","activityId","subcategoryId","tutorName","topic","skills","notes","ambiguousFields"]};
 const RESPONSE_FORMAT={type:"json_schema",json_schema:{name:"polyglow_study_sessions",strict:true,schema:{type:"object",additionalProperties:false,properties:{sessions:{type:"array",minItems:1,maxItems:8,items:SESSION_SCHEMA}},required:["sessions"]}}};
 
-function localClarificationDraft(description,clientDate){const text=String(description||"").toLowerCase(),aliases={en:["english","англий"],fr:["french","француз"],es:["spanish","испан"],de:["german","немец"]},detectedLanguageIds=Object.entries(aliases).filter(([,words])=>words.some(word=>text.includes(word))).map(([code])=>code);let durationMinutes=null,activityId=null,subcategoryId=null;const minutes=text.match(/(\d{1,4})\s*(?:мин|min)/);if(minutes)durationMinutes=Number(minutes[1]);else if(/получас|half\s*an?\s*hour/.test(text))durationMinutes=30;if(/чита|read/.test(text))activityId="reading";else if(/duolingo|прилож|\bapp\b/.test(text)){activityId="integrated-learning";subcategoryId="app";}else if(/граммат|grammar/.test(text))activityId="grammar";const multipleSessions=detectedLanguageIds.length>1||((text.match(/\d{1,4}\s*(?:мин|min)/g)||[]).length>1);const ambiguousFields=multipleSessions?["languageId"]:[];const draft=normalizeDraft({date:null,dateExplicit:false,languageId:detectedLanguageIds.length===1?detectedLanguageIds[0]:null,detectedLanguageIds,durationMinutes,activityId,subcategoryId,tutorName:null,topic:null,skills:[],notes:null,ambiguousFields,multipleSessions});draft.date=clientDate;return draft;}
+function extractDurations(value){
+  const results=[],pattern=/(\d{1,4})\s*(?:минут(?:у|ы|а)?|мин\.?|minutes?|mins?\.?)(?![\p{L}\p{N}])|полчаса|half\s+an?\s+hour|(?<![\p{L}\p{N}])час(?:а)?(?![\p{L}\p{N}])|(?<![\p{L}\p{N}])an?\s+hour(?![\p{L}\p{N}])/giu;
+  for(const match of String(value||"").matchAll(pattern)){const raw=match[0].toLowerCase(),minutes=match[1]?Number(match[1]):/полчаса|half/.test(raw)?30:60;results.push({minutes,index:match.index,end:match.index+match[0].length});}
+  return results;
+}
+function languageMentions(value){const text=String(value||"").toLowerCase(),mentions=[];for(const [code,words] of Object.entries(LANGUAGE_ALIASES)){for(const word of words){let index=text.indexOf(word);while(index>=0){const before=text.slice(0,index);if(!/(?:\babout\s+|\btopic\s+|о\s+|про\s+)$/.test(before))mentions.push({code,index});index=text.indexOf(word,index+word.length);}}}return mentions.sort((a,b)=>a.index-b.index);}
+function languageAt(value){return languageMentions(value)[0]?.code||null;}
+function activityAt(value){if(APP_PATTERN.test(value))return["integrated-learning","app"];if(/чита|\bread(?:ing)?\b/i.test(value))return["reading",/(?:\bbook\b|книг)/i.test(value)?"book":null];if(/граммат|grammar/i.test(value))return["grammar",null];return[null,null];}
+function sessionFragments(value){
+  const text=String(value||"").toLowerCase();let fragments=text.split(/\s*(?:,\s*)?(?:а\s+затем|а\s+потом|и\s+затем|затем|потом|and\s+then|then)\s+/i).filter(Boolean);
+  if(fragments.length===1){const simple=text.split(/\s+(?:и|and)\s+/i).filter(Boolean);if(simple.length>1&&simple.every(part=>languageAt(part)&&ACTIVITY_SIGNAL.test(part)))fragments=simple;}
+  return fragments;
+}
+function localClarificationDraft(description,clientDate){const text=String(description||"").toLowerCase(),detectedLanguageIds=[...new Set(languageMentions(text).map(item=>item.code))];const durations=extractDurations(text);let durationMinutes=durations.length===1?durations[0].minutes:null;const [activityId,subcategoryId]=activityAt(text);const multipleSessions=detectedLanguageIds.length>1||durations.length>1;const ambiguousFields=multipleSessions?["languageId"]:[];const draft=normalizeDraft({date:null,dateExplicit:false,languageId:detectedLanguageIds.length===1?detectedLanguageIds[0]:null,detectedLanguageIds,durationMinutes,activityId,subcategoryId,tutorName:null,topic:null,skills:[],notes:null,ambiguousFields,multipleSessions});draft.date=clientDate;return draft;}
 
 function localSessionDrafts(description,clientDate){
-  const text=String(description||"").toLowerCase(),aliases={en:["english","англий"],fr:["french","француз"],es:["spanish","испан"],de:["german","немец"]};
-  const mentions=(value,words)=>words.some(word=>{let index=value.indexOf(word);while(index>=0){const before=value.slice(0,index);if(!/(?:\babout\s+|\btopic\s+|о\s+|про\s+)$/.test(before))return true;index=value.indexOf(word,index+word.length);}return false;});
-  const languageAt=value=>Object.entries(aliases).find(([,words])=>mentions(value,words))?.[0]||null;
-  const activityAt=value=>/чита|read/.test(value)?["reading",null]:/duolingo|прилож|\bapp\b/.test(value)?["integrated-learning","app"]:/граммат|grammar/.test(value)?["grammar",null]:[null,null];
-  const allCodes=Object.entries(aliases).filter(([,words])=>mentions(text,words)).map(([code])=>code);
-  const perDuration=text.match(/(?:по|each)\s*(\d{1,4})\s*(?:мин|min)/)?.[1];
-  if(perDuration&&allCodes.length>1){const [activityId,subcategoryId]=activityAt(text);return allCodes.map(languageId=>prepareSession({languageId,detectedLanguageIds:[languageId],durationMinutes:Number(perDuration),activityId,subcategoryId,ambiguousFields:[],dateExplicit:false},clientDate));}
-  const clauses=text.split(/\s+(?:и|and)\s+/),sessions=[];
-  for(const clause of clauses){const languageId=languageAt(clause);if(!languageId)continue;const duration=clause.match(/(\d{1,4})\s*(?:мин|min)/)?.[1]||null,[activityId,subcategoryId]=activityAt(clause);sessions.push(prepareSession({languageId,detectedLanguageIds:[languageId],durationMinutes:duration?Number(duration):null,activityId,subcategoryId,ambiguousFields:[],dateExplicit:false},clientDate));}
+  const text=String(description||"").toLowerCase(),allCodes=[...new Set(languageMentions(text).map(item=>item.code))];
+  const perDuration=text.match(/(?:по|each)\s*(\d{1,4})\s*(?:минут(?:у|ы|а)?|мин\.?|minutes?|mins?\.?)/i)?.[1];
+  const clauses=sessionFragments(text),sessions=[];
+  for(const clause of clauses){const languageId=languageAt(clause);if(!languageId)continue;const durations=extractDurations(clause),[activityId,subcategoryId]=activityAt(clause);sessions.push(prepareSession({languageId,detectedLanguageIds:[languageId],durationMinutes:durations.length===1?durations[0].minutes:perDuration?Number(perDuration):null,activityId,subcategoryId,ambiguousFields:[],dateExplicit:false},clientDate));}
+  if(perDuration&&sessions.length<2&&allCodes.length>1){const [activityId,subcategoryId]=activityAt(text);return allCodes.map(languageId=>prepareSession({languageId,detectedLanguageIds:[languageId],durationMinutes:Number(perDuration),activityId,subcategoryId,ambiguousFields:[],dateExplicit:false},clientDate));}
   if(sessions.length>1||sessions.length&&allCodes.length===sessions.length)return sessions;
   if(allCodes.length>1){const [activityId,subcategoryId]=activityAt(text);return allCodes.map(languageId=>prepareSession({languageId,detectedLanguageIds:[languageId],durationMinutes:null,activityId,subcategoryId,ambiguousFields:[],dateExplicit:false},clientDate));}
   return[prepareSession(localClarificationDraft(description,clientDate),clientDate)];
+}
+
+function reconcileSessions(description,rawSessions,clientDate){
+  const modelSessions=rawSessions.slice(0,8).map(item=>prepareSession(item,clientDate)),evidence=localSessionDrafts(description,clientDate),hasDurationEvidence=extractDurations(description).length>0;
+  if(evidence.length!==modelSessions.length)return modelSessions;
+  const unused=new Set(evidence.map((_,index)=>index));
+  return modelSessions.map((model,index)=>{let evidenceIndex=[...unused].find(item=>evidence[item].languageId&&evidence[item].languageId===model.languageId);if(evidenceIndex===undefined&&unused.has(index))evidenceIndex=index;if(evidenceIndex===undefined)return model;unused.delete(evidenceIndex);const verified=evidence[evidenceIndex],ambiguousFields=(model.ambiguousFields||[]).filter(field=>field!=="durationMinutes");const activityVerified=Boolean(verified.activityId);return prepareSession({...model,dateExplicit:Boolean(model.date),languageId:verified.languageId||model.languageId,detectedLanguageIds:verified.languageId?[verified.languageId]:model.detectedLanguageIds,durationMinutes:hasDurationEvidence?verified.durationMinutes:model.durationMinutes,activityId:activityVerified?verified.activityId:model.activityId,subcategoryId:activityVerified?verified.subcategoryId:model.subcategoryId,ambiguousFields},clientDate);});
 }
 
 async function requestDraft({fetchImpl,key,model,description,uiLanguage,clientDate}){
@@ -117,7 +136,7 @@ async function requestDraft({fetchImpl,key,model,description,uiLanguage,clientDa
   try{parsed=JSON.parse(jsonText);}
   catch(error){safeLog("model_json_parse",{status:upstreamStatus,code:"AI_INVALID_RESPONSE",message:"Model JSON could not be parsed",model,hasKey:Boolean(key),...errorDetails(error)});return{ok:false,status:502,code:"AI_INVALID_RESPONSE"};}
 
-  try{if(!Array.isArray(parsed?.sessions)||!parsed.sessions.length)return{ok:false,status:502,code:"AI_INVALID_RESPONSE"};const sessions=parsed.sessions.slice(0,8).map(item=>prepareSession(item,clientDate));return{ok:true,sessions};}
+  try{if(!Array.isArray(parsed?.sessions)||!parsed.sessions.length)return{ok:false,status:502,code:"AI_INVALID_RESPONSE"};const sessions=reconcileSessions(description,parsed.sessions,clientDate);return{ok:true,sessions};}
   catch(error){safeLog("draft_normalize",{status:upstreamStatus,code:"INTERNAL_ERROR",message:"Could not normalize model draft",model,hasKey:Boolean(key),...errorDetails(error)});return{ok:false,status:500,code:"INTERNAL_ERROR"};}
 }
 
@@ -154,3 +173,5 @@ module.exports.normalizeModel=normalizeModel;
 module.exports.localClarificationDraft=localClarificationDraft;
 module.exports.localSessionDrafts=localSessionDrafts;
 module.exports.prepareSession=prepareSession;
+module.exports.extractDurations=extractDurations;
+module.exports.reconcileSessions=reconcileSessions;

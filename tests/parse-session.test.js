@@ -105,8 +105,47 @@ test("locally clarifies vague and partial descriptions without stale defaults",(
 });
 
 test("creates separate English and French session drafts",()=>{
-  const sessions=handler.localSessionDrafts("Сегодня 20 минут читала по-английски и 15 минут занималась французским в приложении","2026-08-30");
-  assert.equal(sessions.length,2);assert.deepEqual(sessions.map(item=>[item.languageId,item.durationMinutes,item.activityId]),[["en",20,"reading"],["fr",15,"integrated-learning"]]);
+  const sessions=handler.localSessionDrafts("Сегодня 20 минут читала по-английски, а затем 15 минут занималась французским в приложении.","2026-08-30");
+  assert.equal(sessions.length,2);assert.deepEqual(sessions.map(item=>[item.languageId,item.durationMinutes,item.activityId,item.subcategoryId]),[["en",20,"reading",null],["fr",15,"integrated-learning","app"]]);
+});
+
+test("creates the same English and French sessions from English text",()=>{
+  const sessions=handler.localSessionDrafts("I read in English for 20 minutes and then studied French in Duolingo for 15 minutes.","2026-08-30");
+  assert.equal(sessions.length,2);assert.deepEqual(sessions.map(item=>[item.languageId,item.durationMinutes,item.activityId,item.subcategoryId]),[["en",20,"reading",null],["fr",15,"integrated-learning","app"]]);
+});
+
+test("recognizes a Spanish Duolingo session",()=>{
+  const sessions=handler.localSessionDrafts("Сегодня 30 минут занималась испанским в Duolingo.","2026-08-30");
+  assert.equal(sessions.length,1);assert.deepEqual([sessions[0].languageId,sessions[0].durationMinutes,sessions[0].activityId,sessions[0].subcategoryId],["es",30,"integrated-learning","app"]);
+});
+
+test("keeps the second session duration empty when only the first is timed",()=>{
+  const sessions=handler.localSessionDrafts("Сегодня 20 минут читала на английском, а затем занималась французским.","2026-08-30");
+  assert.equal(sessions.length,2);assert.deepEqual(sessions.map(item=>item.durationMinutes),[20,null]);assert.deepEqual(sessions[1].missingFields,["durationMinutes","activityId"]);
+});
+
+test("does not assign one trailing duration to two coordinated languages",()=>{
+  const sessions=handler.localSessionDrafts("Сегодня читала на английском и французском 20 минут.","2026-08-30");
+  assert.equal(sessions.length,2);assert.deepEqual(sessions.map(item=>item.durationMinutes),[null,null]);assert.ok(sessions.every(item=>item.missingFields.includes("durationMinutes")));
+});
+
+test("recognizes half an hour in a German learning app",()=>{
+  const sessions=handler.localSessionDrafts("Полчаса занималась немецким в приложении.","2026-08-30");
+  assert.equal(sessions.length,1);assert.deepEqual([sessions[0].languageId,sessions[0].durationMinutes,sessions[0].activityId,sessions[0].subcategoryId],["de",30,"integrated-learning","app"]);
+});
+
+test("reconciles an inaccurate successful model response with explicit text evidence",async()=>{
+  const description="Сегодня 20 минут читала по-английски, а затем 15 минут занималась французским в приложении.";
+  const model={sessions:[{...validDraft,dateExplicit:false,languageId:"en",detectedLanguageIds:["en"],durationMinutes:null,activityId:"reading",subcategoryId:"book",ambiguousFields:["durationMinutes"]},{...validDraft,dateExplicit:false,languageId:"fr",detectedLanguageIds:["fr"],durationMinutes:null,activityId:"reading",subcategoryId:"book",ambiguousFields:["durationMinutes"]}]};
+  const result=await handler.requestDraft({fetchImpl:mockFetch(200,completion(JSON.stringify(model))),key:"test-key-never-logged",model:"openrouter/free",description,uiLanguage:"ru",clientDate:"2026-08-30"});
+  assert.equal(result.ok,true);assert.deepEqual(result.sessions.map(item=>[item.languageId,item.durationMinutes,item.activityId,item.subcategoryId]),[["en",20,"reading",null],["fr",15,"integrated-learning","app"]]);assert.ok(result.sessions.every(item=>!item.missingFields.includes("durationMinutes")));
+});
+
+test("keeps correct model durations when the text confirms them",()=>{
+  const description="I read in English for 20 minutes and then studied French in Duolingo for 15 minutes.";
+  const model=[{...validDraft,dateExplicit:false,languageId:"en",detectedLanguageIds:["en"],durationMinutes:20,activityId:"reading",subcategoryId:null,ambiguousFields:[]},{...validDraft,dateExplicit:false,languageId:"fr",detectedLanguageIds:["fr"],durationMinutes:15,activityId:"integrated-learning",subcategoryId:"app",ambiguousFields:[]}];
+  const sessions=handler.reconcileSessions(description,model,"2026-08-30");
+  assert.deepEqual(sessions.map(item=>item.durationMinutes),[20,15]);
 });
 
 test("does not divide shared time between languages",()=>{
